@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, memo } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
 import {
   SCHEDULE,
   GROUPS,
@@ -12,7 +11,6 @@ import {
 
 /* ============ Утилиты ============ */
 
-// "08.30-10.05" → { start: 510, end: 605 }
 function parseSlot(slot: string) {
   const [a, b] = slot.split('-');
   const toMin = (t: string) => {
@@ -22,16 +20,18 @@ function parseSlot(slot: string) {
   return { start: toMin(a), end: toMin(b) };
 }
 
-// Получить индекс дня в массиве DAYS (Пн=0 … Сб=5, Вс=6 — отдых)
 function todayIndex(d: Date) {
   return (d.getDay() + 6) % 7;
 }
 
-// Стабильный цвет по строке (название предмета)
 function subjectColor(s: string) {
   let hash = 0;
   for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) | 0;
   return `hsl(${Math.abs(hash) % 360} 70% 45%)`;
+}
+
+function isGroup(v: string | null): v is Group {
+  return !!v && (GROUPS as readonly string[]).includes(v);
 }
 
 /* ============ Хук текущего времени ============ */
@@ -57,7 +57,6 @@ function findNextLesson(
   const idx = todayIndex(now);
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
-  // Ищем сегодня
   for (let offset = 0; offset < 7; offset++) {
     const day = DAYS[idx + offset] ?? DAYS[(idx + offset) % 7];
     const dayData = schedule[day];
@@ -69,7 +68,7 @@ function findNextLesson(
 
     for (const [time, lessons] of entries) {
       const { start } = parseSlot(time);
-      if (offset === 0 && start + 85 < nowMin) continue; // сегодня уже прошло
+      if (offset === 0 && start + 85 < nowMin) continue;
       return {
         day,
         time,
@@ -153,7 +152,6 @@ const LessonCard = memo(function LessonCard({
         KIND_STYLES[lesson.kind] ?? 'bg-gray-50'
       }`}
     >
-      {/* Цветная полоска по предмету */}
       <span
         className="absolute left-0 top-0 bottom-0 w-1.5 rounded-l-lg"
         style={{ backgroundColor: accent }}
@@ -287,41 +285,42 @@ const GroupTabs = memo(function GroupTabs({
 /* ============ Главный компонент ============ */
 
 export default function ScheduleClient() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const now = useNow();
 
-  // Начальная группа: сначала URL, потом localStorage, потом первая
+  // Начальная группа: URL → localStorage → первая из списка
   const [selectedGroup, setSelectedGroup] = useState<Group>(() => {
-    const fromUrl = searchParams.get('group');
-    if (fromUrl && (GROUPS as readonly string[]).includes(fromUrl)) {
-      return fromUrl as Group;
-    }
+    if (typeof window === 'undefined') return GROUPS[0];
+    const fromUrl = new URLSearchParams(window.location.search).get('group');
+    if (isGroup(fromUrl)) return fromUrl;
+    const saved = localStorage.getItem('lastGroup');
+    if (isGroup(saved)) return saved;
     return GROUPS[0];
   });
 
-  // На монтировании: если в URL нет — берём из localStorage
+  // Синхронизация с URL/localStorage после монтирования
   useEffect(() => {
-    if (searchParams.get('group')) return;
-    const saved = localStorage.getItem('lastGroup');
-    if (saved && (GROUPS as readonly string[]).includes(saved)) {
-      setSelectedGroup(saved as Group);
+    if (typeof window === 'undefined') return;
+    const fromUrl = new URLSearchParams(window.location.search).get('group');
+    if (isGroup(fromUrl)) {
+      setSelectedGroup(fromUrl);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const saved = localStorage.getItem('lastGroup');
+    if (isGroup(saved)) setSelectedGroup(saved);
   }, []);
 
-  const handleSelect = useCallback(
-    (g: Group) => {
-      setSelectedGroup(g);
-      localStorage.setItem('lastGroup', g);
-      const params = new URLSearchParams(searchParams.toString());
-      params.set('group', g);
-      router.replace(`?${params.toString()}`, { scroll: false });
-    },
-    [router, searchParams],
-  );
+  const handleSelect = useCallback((g: Group) => {
+    setSelectedGroup(g);
+    if (typeof window === 'undefined') return;
 
-  // Предобработка расписания под выбранную группу
+    localStorage.setItem('lastGroup', g);
+
+    // Обновляем URL нативно — БЕЗ next/navigation, чтобы не дёргать RSC
+    const params = new URLSearchParams(window.location.search);
+    params.set('group', g);
+    window.history.replaceState(null, '', `?${params.toString()}`);
+  }, []);
+
   const days = useMemo(() => {
     const raw = SCHEDULE[selectedGroup] ?? {};
     return DAYS.map((day) => ({
